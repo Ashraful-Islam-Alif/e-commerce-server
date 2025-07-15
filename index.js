@@ -8,7 +8,7 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 // encode credentials (in case special chars exist)
 const DB_USER = encodeURIComponent(process.env.DB_USER);
@@ -29,24 +29,90 @@ async function run() {
   try {
     await client.connect();
 
+    const userCollection = client.db("GripsNGears").collection("users");
     const helmetCollection = client.db("GripsNGears").collection("helmet");
     const cartCollection = client.db("GripsNGears").collection("carts");
 
+    //list of users
+    app.get("/users", async (req, res) => {
+      const result = await userCollection.find().toArray();
+      res.send(result);
+    });
+
+    //finding all user and prevent odd user not to add in database
+    app.post("/users", async (req, res) => {
+      const user = req.body;
+      const query = { email: user.email };
+      const existingUser = await userCollection.findOne(query);
+
+      if (existingUser) {
+        return res.send({ message: "user already exists", insertedId: null });
+      }
+
+      const result = await userCollection.insertOne(user);
+      res.send(result);
+    });
+
+    // delete user
+    app.delete("/users/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await userCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    //list of all helmet items
     app.get("/helmet", async (req, res) => {
       const result = await helmetCollection.find().toArray();
       res.send(result);
     });
 
-    // carts collection
+    // cart collection apis
     app.get("/carts", async (req, res) => {
-      const result = await cartCollection.find().toArray();
+      const email = req.query.email;
+      if (!email) {
+        res.send([]);
+      }
+      const query = { email: email };
+      const result = await cartCollection.find(query).toArray();
       res.send(result);
     });
 
-    app.post("/carts", async (req, res) => {
-      const cartItem = req.body;
-      const result = await cartCollection.insertOne(cartItem);
+    app.patch("/carts/:id", async (req, res) => {
+      const id = req.params.id;
+      const { quantity } = req.body;
+      const result = await cartCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { quantity } }
+      );
       res.send(result);
+    });
+
+    //delete cart items
+    app.delete("/carts/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await cartCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    //check & update cart items
+    app.post("/carts", async (req, res) => {
+      const { email, productId, name, image, price } = req.body;
+      const query = { email, productId };
+      const existing = await cartCollection.findOne(query);
+
+      if (existing) {
+        const result = await cartCollection.updateOne(
+          query,
+          { $inc: { quantity: 1 } } // increment quantity
+        );
+        return res.send({ modified: true, result });
+      } else {
+        const newItem = { email, productId, name, image, price, quantity: 1 };
+        const result = await cartCollection.insertOne(newItem);
+        return res.send({ insertedId: result.insertedId });
+      }
     });
 
     await client.db("GripsNGears").command({ ping: 1 });
