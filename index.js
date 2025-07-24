@@ -31,7 +31,14 @@ async function run() {
     await client.connect();
 
     const userCollection = client.db("GripsNGears").collection("users");
+    const allProductsCollection = client
+      .db("GripsNGears")
+      .collection("allproducts");
     const helmetCollection = client.db("GripsNGears").collection("helmet");
+    const tyreCollection = client.db("GripsNGears").collection("tyre");
+    const sparePartsCollection = client
+      .db("GripsNGears")
+      .collection("spareParts");
     const cartCollection = client.db("GripsNGears").collection("carts");
 
     //jwt api
@@ -136,6 +143,95 @@ async function run() {
       const result = await helmetCollection.find().toArray();
       res.send(result);
     });
+
+    //add helmet items
+    app.post("/helmet", verifyToken, verifyAdmin, async (req, res) => {
+      const item = req.body;
+      const result = await helmetCollection.insertOne(item);
+      res.send(result);
+    });
+
+    // List of all tyre items
+    app.get("/tyre", async (req, res) => {
+      const result = await tyreCollection.find().toArray();
+      res.send(result);
+    });
+
+    // Add tyre items
+    app.post("/tyre", verifyToken, verifyAdmin, async (req, res) => {
+      const item = req.body;
+      const result = await tyreCollection.insertOne(item);
+      res.send(result);
+    });
+
+    // List of all spare parts items
+    app.get("/spareparts", async (req, res) => {
+      const result = await sparePartsCollection.find().toArray();
+      res.send(result);
+    });
+
+    // Add spare parts items
+    app.post("/spareparts", verifyToken, verifyAdmin, async (req, res) => {
+      const item = req.body;
+      const result = await sparePartsCollection.insertOne(item);
+      res.send(result);
+    });
+
+    // List of all products from allProducts collection
+    app.get("/allproducts", async (req, res) => {
+      const result = await allProductsCollection.find().toArray();
+      res.send(result);
+    });
+
+    // Add items to allProducts collection
+    app.post("/allproducts", async (req, res) => {
+      const item = req.body;
+      const result = await allProductsCollection.insertOne(item);
+      res.send(result);
+    });
+
+    // delete product
+    app.delete(
+      "/allproducts/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await allProductsCollection.deleteOne(query);
+        res.send(result);
+      }
+    );
+
+    // category wise delete item
+    // delete for helmet
+    app.delete("/helmet/:id", verifyToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await helmetCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    //delete for tyre
+    app.delete("/tyre/:id", verifyToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await tyreCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    //delete for spareparts
+    app.delete(
+      "/spareparts/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await sparePartsCollection.deleteOne(query);
+        res.send(result);
+      }
+    );
 
     // cart collection apis
     app.get("/carts", async (req, res) => {
