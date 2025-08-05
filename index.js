@@ -499,6 +499,72 @@ async function run() {
       }
     );
 
+    // admin stats for dashboard for admin dashboard
+    app.get("/stats", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const totalRevenue = await orderCollection
+          .aggregate([
+            { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+          ])
+          .toArray();
+
+        const totalOrders = await orderCollection.countDocuments();
+        const totalCustomers = await userCollection.countDocuments({
+          role: "admin",
+        });
+        const totalProducts = await allProductsCollection.countDocuments();
+
+        const categories = await allProductsCollection
+          .aggregate([{ $group: { _id: "$category", count: { $sum: 1 } } }])
+          .toArray();
+
+        const topSellingProducts = await orderCollection
+          .aggregate([
+            { $match: { status: "confirmed" } }, // Only confirmed orders
+            { $unwind: "$cartItems" }, // Flatten the cartItems array
+            {
+              $group: {
+                _id: "$cartItems.productId", // Group by productId
+                totalSold: { $sum: "$cartItems.quantity" }, // Sum the quantity sold
+                name: { $first: "$cartItems.name" }, // Get name from cartItem
+                image: { $first: "$cartItems.image" }, // Get image for visualization
+              },
+            },
+            { $sort: { totalSold: -1 } }, // Sort by total quantity sold
+            { $limit: 10 }, // Get top 10 products
+          ])
+          .toArray();
+
+        const monthlyStats = await orderCollection
+          .aggregate([
+            {
+              $group: {
+                _id: {
+                  year: { $year: "$createdAt" },
+                  month: { $month: "$createdAt" },
+                },
+                monthlyRevenue: { $sum: "$totalAmount" },
+                orderCount: { $sum: 1 },
+              },
+            },
+            { $sort: { "_id.year": 1, "_id.month": 1 } },
+          ])
+          .toArray();
+
+        res.send({
+          totalRevenue: totalRevenue[0]?.total || 0,
+          totalOrders,
+          totalCustomers,
+          totalProducts,
+          productCategories: categories,
+          monthlyStats,
+          topSellingProducts,
+        });
+      } catch (error) {
+        res.status(500).send({ message: "Failed to fetch stats" });
+      }
+    });
+
     //list of all helmet items
     app.get("/helmet", async (req, res) => {
       const result = await helmetCollection.find().toArray();
