@@ -223,7 +223,11 @@ async function run() {
             createdAt: new Date(),
             paymentStatus: "pending",
           };
-
+          await orderCollection.deleteOne({
+            transactionId: tran_id,
+            email: email,
+            status: "pending",
+          });
           await orderCollection.insertOne(pendingOrder);
 
           res.json({
@@ -248,6 +252,107 @@ async function run() {
       }
     });
 
+    // Repayment for existing pending orders
+    app.post("/payment/repay", verifyToken, async (req, res) => {
+      try {
+        const { transactionId, email } = req.body;
+
+        if (!transactionId) {
+          return res.status(400).json({ error: "Transaction ID is required" });
+        }
+
+        // Find the existing pending order
+        const existingOrder = await orderCollection.findOne({
+          transactionId: transactionId,
+          email: email,
+          paymentStatus: "pending",
+        });
+
+        if (!existingOrder) {
+          return res.status(404).json({ error: "Pending order not found" });
+        }
+
+        const data = {
+          total_amount: existingOrder.totalAmount,
+          currency: "BDT",
+          tran_id: transactionId, // Use the same transaction ID
+
+          // Callback URLs
+          success_url: `${BACKEND_URL}/payment/success/${transactionId}`,
+          fail_url: `${BACKEND_URL}/payment/fail/${transactionId}`,
+          cancel_url: `${BACKEND_URL}/payment/cancel/${transactionId}`,
+
+          // Customer Information
+          cus_name: existingOrder.customerInfo.name,
+          cus_email: email,
+          cus_add1: existingOrder.customerInfo.address,
+          cus_add2: existingOrder.customerInfo.address2 || "",
+          cus_city: existingOrder.customerInfo.city,
+          cus_state: existingOrder.customerInfo.state || "",
+          cus_postcode: existingOrder.customerInfo.postcode,
+          cus_country: existingOrder.customerInfo.country || "Bangladesh",
+          cus_phone: existingOrder.customerInfo.phone,
+          cus_fax: existingOrder.customerInfo.phone,
+
+          // Shipping Information
+          ship_name: existingOrder.customerInfo.name,
+          ship_add1: existingOrder.customerInfo.address,
+          ship_add2: existingOrder.customerInfo.address2 || "",
+          ship_city: existingOrder.customerInfo.city,
+          ship_state: existingOrder.customerInfo.state || "",
+          ship_postcode: existingOrder.customerInfo.postcode,
+          ship_country: existingOrder.customerInfo.country || "Bangladesh",
+
+          // Product Information
+          product_name: `Grips & Gears Repayment - ${existingOrder.cartItems.length} items`,
+          product_category: "Motorcycle Parts",
+          product_profile: "general",
+
+          // Additional configurations
+          shipping_method: "Courier",
+          multi_card_name: "mastercard,visacard,amexcard",
+          value_a: email,
+          value_b: JSON.stringify(existingOrder.cartItems),
+          value_c: "repayment", // Mark as repayment
+          value_d: "",
+        };
+
+        const sslcz = new SSLCommerzPayment(store_id, store_passwd, is_live);
+        const apiResponse = await sslcz.init(data);
+
+        if (apiResponse?.GatewayPageURL) {
+          // Update the existing order's updatedAt timestamp
+          await orderCollection.updateOne(
+            { transactionId: transactionId },
+            {
+              $set: {
+                updatedAt: new Date(),
+                repaymentAttempt: true,
+              },
+            }
+          );
+
+          res.json({
+            success: true,
+            paymentUrl: apiResponse.GatewayPageURL,
+            transactionId: transactionId,
+          });
+        } else {
+          res.status(400).json({
+            success: false,
+            error: "Repayment initialization failed",
+            details: apiResponse,
+          });
+        }
+      } catch (error) {
+        console.error("Repayment initialization error:", error);
+        res.status(500).json({
+          success: false,
+          error: "Repayment initialization failed",
+          message: error.message,
+        });
+      }
+    });
     // SSL Commerz Success Callback - This runs on BACKEND
     app.post("/payment/success/:tran_id", async (req, res) => {
       try {
@@ -268,20 +373,20 @@ async function run() {
           validation.status === "VALID" ||
           validation.status === "VALIDATED"
         ) {
-          // Find the pending order
-          const pendingOrder = await orderCollection.findOne({
+          // Find the order (either pending or any status for repayment)
+          const existingOrder = await orderCollection.findOne({
             transactionId: tran_id,
           });
 
-          if (!pendingOrder) {
+          if (!existingOrder) {
             console.log("❌ Order not found:", tran_id);
             return res.redirect(
               `${FRONTEND_URL}/payment/error?reason=order_not_found`
             );
           }
 
-          // Update order status
-          await orderCollection.updateOne(
+          // Update order status to confirmed/paid
+          const updateResult = await orderCollection.updateOne(
             { transactionId: tran_id },
             {
               $set: {
@@ -290,20 +395,27 @@ async function run() {
                 paymentDetails: paymentData,
                 validationDetails: validation,
                 paidAt: new Date(),
+                updatedAt: new Date(),
+              },
+              $unset: {
+                repaymentAttempt: "", // Remove repayment attempt flag if exists
               },
             }
           );
 
-          // Clear user's cart
-          const cartDeleteResult = await cartCollection.deleteMany({
-            email: pendingOrder.email,
-          });
+          console.log("✅ Order Updated:", updateResult.modifiedCount);
 
-          console.log(
-            "🗑️ Cart cleared:",
-            cartDeleteResult.deletedCount,
-            "items"
-          );
+          // Clear user's cart only if this was an original payment (not repayment)
+          if (!paymentData.value_c || paymentData.value_c !== "repayment") {
+            const cartDeleteResult = await cartCollection.deleteMany({
+              email: existingOrder.email,
+            });
+            console.log(
+              "🗑️ Cart cleared:",
+              cartDeleteResult.deletedCount,
+              "items"
+            );
+          }
 
           // Redirect to frontend success page
           res.redirect(`${FRONTEND_URL}/payment/success/${tran_id}`);
@@ -315,11 +427,13 @@ async function run() {
             { transactionId: tran_id },
             {
               $set: {
-                status: "failed",
-                paymentStatus: "failed",
                 paymentDetails: paymentData,
                 validationDetails: validation,
-                failedAt: new Date(),
+                lastFailedAt: new Date(),
+                updatedAt: new Date(),
+              },
+              $unset: {
+                repaymentAttempt: "",
               },
             }
           );
@@ -340,15 +454,17 @@ async function run() {
 
         console.log("❌ Payment Failed Data:", paymentData);
 
-        // Update order status
+        // Update order - keep as pending for repayment, don't mark as failed
         await orderCollection.updateOne(
           { transactionId: tran_id },
           {
             $set: {
-              status: "failed",
-              paymentStatus: "failed",
               paymentDetails: paymentData,
-              failedAt: new Date(),
+              lastFailedAt: new Date(),
+              updatedAt: new Date(),
+            },
+            $unset: {
+              repaymentAttempt: "",
             },
           }
         );
@@ -369,15 +485,17 @@ async function run() {
 
         console.log("⚠️ Payment Cancelled Data:", paymentData);
 
-        // Update order status
+        // Update order - keep as pending for repayment
         await orderCollection.updateOne(
           { transactionId: tran_id },
           {
             $set: {
-              status: "cancelled",
-              paymentStatus: "cancelled",
               paymentDetails: paymentData,
-              cancelledAt: new Date(),
+              lastCancelledAt: new Date(),
+              updatedAt: new Date(),
+            },
+            $unset: {
+              repaymentAttempt: "",
             },
           }
         );
@@ -563,6 +681,50 @@ async function run() {
       } catch (error) {
         res.status(500).send({ message: "Failed to fetch stats" });
       }
+    });
+
+    //userHome dashboard
+    app.get("/user/home", verifyToken, async (req, res) => {
+      const email = req.decoded.email;
+      const query = { email: email };
+      const user = await userCollection.findOne(query);
+
+      const totalOrders = await orderCollection.countDocuments({ email });
+      const completedOrders = await orderCollection.countDocuments({
+        email,
+        status: "confirmed",
+      });
+      const pendingOrders = await orderCollection.countDocuments({
+        email,
+        status: "pending",
+      });
+
+      // For chart: get orders grouped by month
+      const monthlyOrders = await orderCollection
+        .aggregate([
+          { $match: { email } },
+          {
+            $group: {
+              _id: {
+                year: { $year: "$createdAt" },
+                month: { $month: "$createdAt" },
+              },
+              orderCount: { $sum: 1 },
+            },
+          },
+          { $sort: { "_id.year": 1, "_id.month": 1 } },
+        ])
+        .toArray();
+
+      res.send({
+        name: user?.name || "User",
+        email: user?.email,
+        role: user?.role || "Customer",
+        totalOrders,
+        completedOrders,
+        pendingOrders,
+        monthlyOrders,
+      });
     });
 
     //list of all helmet items
